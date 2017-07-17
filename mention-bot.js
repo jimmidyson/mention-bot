@@ -71,76 +71,34 @@ function startsWith(str, start) {
   return str.substr(0, start.length) === start;
 }
 
-function parseDiffFile(lines: Array<string>): FileInfo {
-  var deletedLines = [];
-
-  // diff --git a/path b/path
-  var line = lines.pop();
-  if (!line.match(/^diff --git a\//)) {
-    throw new Error('Invalid line, should start with `diff --git a/`, instead got \n' + line + '\n');
-  }
-  var fromFile = line.replace(/^diff --git a\/(.+) b\/.+/g, '$1');
-
-  // index sha..sha mode
-  line = lines.pop();
-  if (startsWith(line, 'deleted file') ||
-      startsWith(line, 'new file')) {
-    line = lines.pop();
-  }
-
-  line = lines.pop();
-  if (!line) {
-    // If the diff ends in an empty file with 0 additions or deletions, line will be null
-  } else if (startsWith(line, 'diff --git')) {
-    lines.push(line);
-  } else if (startsWith(line, 'Binary files')) {
-    // We just ignore binary files (mostly images). If we want to improve the
-    // precision in the future, we could look at the history of those files
-    // to get more names.
-  } else if (startsWith(line, '--- ')) {
-    // +++ path
-    line = lines.pop();
-    if (!line.match(/^\+\+\+ /)) {
-      throw new Error('Invalid line, should start with `+++`, instead got \n' + line + '\n');
+function parseDiffFile(lines: Array<string>): Array<FileInfo> {
+  // diff --git "a/path" "b/path" or rename to path/file or rename from path/file
+  var diffRegex = /^diff --git "?a\/(.+)"?\s/;
+  // @@ -from_line,from_count +to_line,to_count @@ first line
+  var offsetRegex = /^@@ -(\d+).+@@/;
+  var offset = null;
+  var current = 0;
+  return lines.reduce((f, line) => {
+    var match = diffRegex.exec(line);
+    if (match) {
+      offset = null;
+      f.push({path: match[1], deletedLines: []});
+      return f;
     }
-
-    var currentFromLine = 0;
-    while (lines.length > 0) {
-      line = lines.pop();
-      if (startsWith(line, 'diff --git')) {
-        lines.push(line);
-        break;
-      }
-
-      // @@ -from_line,from_count +to_line,to_count @@ first line
-      if (startsWith(line, '@@')) {
-        var matches = line.match(/^\@\@ -([0-9]+),?([0-9]+)? \+([0-9]+),?([0-9]+)? \@\@/);
-        if (!matches) {
-          continue;
-        }
-
-        var from_line = matches[1];
-        var from_count = matches[2];
-        var to_line = matches[3];
-        var to_count = matches[4];
-
-        currentFromLine = +from_line;
-        continue;
-      }
-
-      if (startsWith(line, '-')) {
-        deletedLines.push(currentFromLine);
-      }
-      if (!startsWith(line, '+')) {
-        currentFromLine++;
-      }
+    var offsetMatch = offsetRegex.exec(line);
+    if (offsetMatch) {
+      offset = parseInt(offsetMatch[1], 10)
+      current = 0;
+      return f;
     }
-  }
-
-  return {
-    path: fromFile,
-    deletedLines: deletedLines,
-  };
+    if (line.startsWith('-') && offset) {
+      f[f.length -1].deletedLines.push(current + offset);
+    }
+    if (!line.startsWith('+')) {
+      current++;
+    }
+    return f;
+  }, [])
 }
 
 function parseDiff(diff: string): Array<FileInfo> {
@@ -152,13 +110,7 @@ function parseDiff(diff: string): Array<FileInfo> {
   }
 
   var lines = diff.trim().split('\n');
-  // Hack Array doesn't have shift/unshift to work from the beginning of the
-  // array, so we reverse the entire array in order to be able to use pop/add.
-  lines.reverse();
-
-  while (lines.length > 0) {
-    files.push(parseDiffFile(lines));
-  }
+  files = parseDiffFile(lines);
 
   return files;
 }
@@ -186,7 +138,7 @@ function parseBlame(blame: string): Array<string> {
   // The way the document is structured is that commits and lines are
   // interleaved. So every time we see a commit we grab the author's name
   // and every time we see a line we log the last seen author.
-  var re = /(rel="(?:author|contributor)">([^<]+)<\/a> authored|<tr class="blame-line">)/g;
+  var re = /(<img alt="@([^"]+)" class="avatar blame-commit-avatar"|<tr class="blame-line")/g;
 
   var currentAuthor = 'none';
   var lines = [];
@@ -419,11 +371,11 @@ async function getTeams(
 }
 
 async function getOwnerOrgs(
-  owner: string,
+  username: string,
   github: Object
 ): Promise<Array<string>> {
   return new Promise(function(resolve, reject) {
-    github.orgs.getForUser({ owner: owner }, function(err, result) {
+    github.orgs.getForUser({ username: username }, function(err, result) {
       if (err) {
         reject(err);
       } else {
@@ -473,16 +425,14 @@ async function filterRequiredOrgs(
   config: Object,
   github: Object
 ): Promise<Array<string>> {
-  var promises = owners.map(function(owner) {
-    return getOwnerOrgs(owner, github);
-  });
+  var promises = config.requiredOrgs.map(function(reqOrg) {
+    return getMembersOfOrg(reqOrg, github, 0);
+  })
 
-  var userOrgs = await Promise.all(promises);
-  return owners.filter(function(owner, index) {
-    // user passes if he is in any of the required organizations
-    return config.requiredOrgs.some(function(reqOrg) {
-      return userOrgs[index].indexOf(reqOrg) >= 0;
-    });
+  var currentMembers = [].concat.apply([], await Promise.all(promises));
+  return owners.filter(function(owner) {
+    // User passes if they are in any of the required organizations
+    return currentMembers.indexOf(owner) >= 0;
   });
 }
 

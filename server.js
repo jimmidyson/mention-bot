@@ -134,12 +134,14 @@ async function work(body) {
     requiredOrgs: [],
     findPotentialReviewers: true,
     actions: ['opened'],
+    branches:[],
     skipAlreadyAssignedPR: false,
     skipAlreadyMentionedPR: false,
     delayed: false,
     delayedUntil: '3d',
     assignToReviewer: false,
     createReviewRequest: false,
+    createComment: true,
     skipTitle: '',
     withLabel: '',
     skipCollaboratorPR: false,
@@ -201,9 +203,17 @@ async function work(body) {
   }
 
   function isValid(repoConfig, data) {
+    if (repoConfig.branches && repoConfig.branches.length > 0 && repoConfig.branches.indexOf(data.pull_request.base.ref) === -1) {
+      console.log(
+        'Skipping because base ref is "' + data.pull_request.base.ref + '".',
+        'We only care about: "' + repoConfig.branches.join("', '") + '"'
+      );
+      return false;
+    }
+
     if (repoConfig.actions.indexOf(data.action) === -1) {
       console.log(
-        'Skipping because action is ' + data.action + '.',
+        'Skipping because action is "' + data.action + '".',
         'We only care about: "' + repoConfig.actions.join("', '") + '"'
       );
       return false;
@@ -211,13 +221,13 @@ async function work(body) {
 
     if (repoConfig.withLabel && data.label &&
         data.label.name != repoConfig.withLabel) {
-      console.log('Skipping because pull request does not have label: ' + repoConfig.withLabel);
+      console.log('Skipping because pull request does not have label: "' + repoConfig.withLabel + '".');
       return false;
     }
 
     if (repoConfig.skipTitle &&
         data.pull_request.title.indexOf(repoConfig.skipTitle) > -1) {
-      console.log('Skipping because pull request title contains: ' + repoConfig.skipTitle);
+      console.log('Skipping because pull request title contains: "' + repoConfig.skipTitle + '".');
       return false;
     }
 
@@ -254,7 +264,7 @@ async function work(body) {
 
     if (repoConfig.skipTitle &&
         data.pull_request.title.indexOf(repoConfig.skipTitle) > -1) {
-      console.log('Skipping because pull request title contains: ' + repoConfig.skipTitle);
+      console.log('Skipping because pull request title contains: "' + repoConfig.skipTitle + '".');
       return false;
     }
 
@@ -306,6 +316,10 @@ async function work(body) {
   }
 
   function createComment(data, message, reject) {
+    if (!repoConfig.createComment) {
+      return;
+    }
+
     github.issues.createComment({
       owner: data.repository.owner.login, // 'fbsamples'
       repo: data.repository.name, // 'bot-testing'
@@ -403,6 +417,7 @@ async function work(body) {
         }
 
         if (!isValid(repoConfig, currentData)) {
+          reject('PR validation failed');
           return;
         }
 
